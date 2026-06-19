@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# 虛擬環境
+.venv/
+venv/
+env/
+
+# 編輯器 / 作業系統
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 本機暫存（NAS 專用稽核 / 還原日誌等不入庫）
+*.log
+ats_*.csv
