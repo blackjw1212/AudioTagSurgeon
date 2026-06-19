@@ -21,3 +21,9 @@ Thumbs.db
 # 本機暫存（NAS 專用稽核 / 還原日誌等不入庫）
 *.log
 ats_*.csv
+
+# Regenerable build/dependency output (cleanup 2026-06-19)
+target/
+node_modules/
+Library/
+.gocache/
