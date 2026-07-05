@@ -53,6 +53,7 @@ _ILLEGAL_FS = re.compile(r'[\\/:*?"<>|]')
 
 
 _cc_singleton = None
+_cc_t2s_singleton = None
 
 
 def _get_converter():
@@ -67,9 +68,26 @@ def _get_converter():
     return _cc_singleton
 
 
+def _get_t2s():
+    """惰性建立 OpenCC('t2s') 單例（僅用於偵測文字是否已含繁體字）。"""
+    global _cc_t2s_singleton
+    if _cc_t2s_singleton is None:
+        _cc_t2s_singleton = OpenCC("t2s")
+    return _cc_t2s_singleton
+
+
 def to_traditional(text):
-    """簡體 → 台灣正體（含慣用語）。"""
+    """
+    簡體 → 台灣正體（含慣用語）。
+
+    冪等性防護：若欄位已含繁體專有字（t2s 轉換會改變它），視為已是繁體、
+    原樣返回。否則 OpenCC 的歧義字會被二次轉換而出錯——
+    例如姓氏「范」：從簡體『范玮琪』詞組轉換正確保留『范瑋琪』，
+    但把已是繁體的『范瑋琪』再轉會錯誤變成『範瑋琪』。
+    """
     if not text:
+        return text
+    if _get_t2s().convert(text) != text:
         return text
     return _get_converter().convert(text)
 

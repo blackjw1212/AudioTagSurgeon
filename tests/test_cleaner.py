@@ -58,6 +58,21 @@ class TestCleaner(unittest.TestCase):
         self.assertEqual(r.artist, "五月天")
         self.assertEqual(r.title, "倔強")
 
+    def test_conversion_idempotent(self):
+        # 冪等性：已是繁體的文字再轉必須原樣不動（歧義字如 范 不可變 範）。
+        for text in ("范瑋琪&張韶涵", "說愛你", "菸癮", "周杰倫", "鄧麗君"):
+            self.assertEqual(cleaner.to_traditional(text), text, text)
+        # 對任意輸入，轉兩次 == 轉一次。
+        for text in ("范玮琪&张韶涵", "说爱你", "黄龄", "执一念"):
+            once = cleaner.to_traditional(text)
+            self.assertEqual(cleaner.to_traditional(once), once, text)
+
+    def test_simplified_still_converts(self):
+        # 防護不可影響正常簡轉繁。
+        self.assertEqual(cleaner.to_traditional("范玮琪&张韶涵"), "范瑋琪&張韶涵")
+        self.assertEqual(cleaner.to_traditional("说爱你"), "說愛你")
+        self.assertEqual(cleaner.to_traditional("黄龄"), "黃齡")
+
     def test_leading_track_not_eat_numeric_artist(self):
         # 數字開頭的團名不可被當成曲目編號刪掉。
         keep = ["1K", "2Cellos", "163braces", "21 Savage", "50 Cent", "2NE1", "4Minute"]
@@ -125,10 +140,16 @@ class TestCleaner(unittest.TestCase):
 
     def test_resolve_partial_tag_falls_back(self):
         # 只有 artist 沒有 title → 不可靠，回退檔名解析。
-        r = cleaner.resolve("胡凯儿-菸瘾", ".flac", "胡凯儿", None)
+        # title「菸癮」已含繁體字 → 冪等防護整欄保留原樣（安全優先）。
+        r = cleaner.resolve("胡凯儿-菸癮", ".flac", "胡凯儿", None)
         self.assertTrue(r.parsable)
         self.assertEqual(r.artist, "胡凱兒")
         self.assertEqual(r.title, "菸癮")
+
+    def test_mixed_field_left_untouched(self):
+        # 混合欄位（繁體字+個別簡體字）整欄不轉：寧可留下個別簡體字，
+        # 也不冒歧義字被改壞的風險（如 范瑋琪 → 範瑋琪）。
+        self.assertEqual(cleaner.to_traditional("菸瘾"), "菸瘾")
 
     def test_safe_component(self):
         # 非法字元被替換，不產生非法檔名。
