@@ -43,6 +43,10 @@ NOISE_PATTERNS = [
     re.compile(r"\s*[\(\[【（]?\s*(?:官方版|官方|現場版|现场版|無損|无损|高音質|高音质|KTV|MV|伴奏|DJ版)\s*[\)\]】）]?\s*", re.IGNORECASE),
 ]
 
+# 標籤垃圾 token：如來源軟體殘留的色碼 #0000FF（含其前置分隔符一併去除）。
+# 限定 6~8 位十六進位，避免誤傷 #1、#Beautiful 這類正當標題。
+_JUNK_TOKENS = re.compile(r"\s*[/／,;，；&＆]?\s*#[0-9A-Fa-f]{6,8}\b")
+
 # 收尾：壓縮多餘空白
 _MULTISPACE = re.compile(r"\s{2,}")
 # 收尾：移除字串前後孤立的雜質符號
@@ -109,17 +113,19 @@ def _find_split_index(stem):
 
 
 def _denoise_title(title):
-    """套用去雜訊規則表 + 收尾清理。"""
+    """套用去雜訊規則表 + 垃圾 token + 收尾清理。"""
     for pat in NOISE_PATTERNS:
         title = pat.sub(" ", title)
+    title = _JUNK_TOKENS.sub("", title)
     title = _MULTISPACE.sub(" ", title)
     title = _EDGE_SYMBOLS.sub("", title)
     return title.strip()
 
 
 def _clean_artist(artist):
-    """剃除前導曲目編號 + 收尾清理。"""
+    """剃除前導曲目編號 + 垃圾 token + 收尾清理。"""
     artist = LEADING_TRACK.sub("", artist)
+    artist = _JUNK_TOKENS.sub("", artist)
     artist = _MULTISPACE.sub(" ", artist)
     artist = _EDGE_SYMBOLS.sub("", artist)
     return artist.strip()

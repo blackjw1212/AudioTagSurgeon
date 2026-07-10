@@ -47,7 +47,8 @@ class AudioTagSurgeonApp:
         top.pack(fill="x")
 
         ttk.Button(top, text="選擇資料夾", command=self.on_pick_folder).pack(side="left")
-        hint = "（可直接拖曳資料夾到視窗）" if _DND_AVAILABLE else "（未安裝 tkinterdnd2，拖放停用）"
+        ttk.Button(top, text="加入檔案", command=self.on_add_files).pack(side="left", padx=(6, 0))
+        hint = "（可拖曳資料夾或音訊檔到視窗）" if _DND_AVAILABLE else "（未安裝 tkinterdnd2，拖放停用）"
         ttk.Label(top, text=hint).pack(side="left", padx=8)
 
         self.folder_var = tk.StringVar(value="尚未選擇資料夾")
@@ -57,20 +58,23 @@ class AudioTagSurgeonApp:
         mid = ttk.Frame(self.root, padding=(8, 0))
         mid.pack(fill="both", expand=True)
 
-        cols = ("original", "artist", "title", "preview", "status")
+        cols = ("sel", "original", "artist", "title", "preview", "status")
         headers = {
+            "sel": "修改",
             "original": "原始檔名",
             "artist": "演出者",
             "title": "歌曲名稱",
             "preview": "預覽 (演出者 - 歌曲名稱)",
             "status": "狀態",
         }
-        widths = {"original": 300, "artist": 130, "title": 180, "preview": 280, "status": 90}
+        widths = {"sel": 44, "original": 280, "artist": 130, "title": 170, "preview": 270, "status": 90}
 
         self.tree = ttk.Treeview(mid, columns=cols, show="headings", selectmode="none")
         for c in cols:
             self.tree.heading(c, text=headers[c])
-            self.tree.column(c, width=widths[c], anchor="w")
+            self.tree.column(c, width=widths[c], anchor="center" if c == "sel" else "w")
+        # 點擊「修改」欄切換勾選
+        self.tree.bind("<Button-1>", self.on_tree_click)
         self.tree.tag_configure("unparsable", foreground="#999")
         self.tree.tag_configure("done", foreground="#2a7")
         self.tree.tag_configure("bad", foreground="#c33")
@@ -99,21 +103,36 @@ class AudioTagSurgeonApp:
         if folder:
             self.load_folder(folder)
 
+    def on_add_files(self):
+        paths = filedialog.askopenfilenames(
+            title="選擇要加入的音訊檔",
+            filetypes=[("音訊檔", "*.mp3 *.flac"), ("所有檔案", "*.*")],
+        )
+        audio = [p for p in paths if p.lower().endswith(AUDIO_EXTS)]
+        if audio:
+            self.add_paths(audio)
+        elif paths:
+            messagebox.showwarning("提示", "僅支援 .mp3 與 .flac 檔案。")
+
     def on_drop(self, event):
-        # event.data 可能含大括號包覆與多個路徑；取第一個資料夾。
+        # event.data 可能含大括號包覆與多個路徑；資料夾與音訊檔都接受。
         paths = self.root.tk.splitlist(event.data)
-        for p in paths:
-            if os.path.isdir(p):
-                self.load_folder(p)
-                return
-        messagebox.showwarning("提示", "請拖入「資料夾」，而非檔案。")
+        dirs = [p for p in paths if os.path.isdir(p)]
+        files = [p for p in paths if os.path.isfile(p) and p.lower().endswith(AUDIO_EXTS)]
 
-    def load_folder(self, folder):
-        """深度掃描資料夾並填入預覽表。此步驟不修改任何檔案。"""
-        self.folder_var.set(folder)
-        self.tree.delete(*self.tree.get_children())
-        self.rows = []
+        if files:
+            # 拖入含檔案 → 附加模式（資料夾內容一併附加）
+            for d in dirs:
+                files.extend(self._scan_folder(d))
+            self.add_paths(files)
+        elif dirs:
+            # 只拖入資料夾 → 維持原行為：重新載入第一個資料夾
+            self.load_folder(dirs[0])
+        else:
+            messagebox.showwarning("提示", "請拖入資料夾或 .mp3 / .flac 檔案。")
 
+    def _scan_folder(self, folder):
+        """深度掃描資料夾，回傳音訊檔路徑清單。無法存取的子資料夾略過並警告。"""
         files = []
         scan_errors = []
 
@@ -125,30 +144,48 @@ class AudioTagSurgeonApp:
             for name in filenames:
                 if name.lower().endswith(AUDIO_EXTS):
                     files.append(os.path.join(dirpath, name))
-        files.sort()
-
-        for path in files:
-            stem, ext = os.path.splitext(os.path.basename(path))
-            try:
-                # 內建標籤優先：先讀檔內 artist/title，缺失時才回退檔名解析。
-                tag_artist, tag_title = tagger.read_tags(path)
-                result = cleaner.resolve(stem, ext, tag_artist, tag_title)
-            except Exception:  # noqa: BLE001 - 單檔讀取失敗不應中斷整批掃描
-                result = cleaner.resolve(stem, ext, None, None)
-            self._add_row(path, result)
-
-        self._refresh_summary()
         if scan_errors:
             messagebox.showwarning(
                 "掃描警告",
                 f"有 {len(scan_errors)} 個資料夾無法存取（權限或路徑問題），已略過。",
             )
+        return files
+
+    def load_folder(self, folder):
+        """深度掃描資料夾並重建預覽表。此步驟不修改任何檔案。"""
+        self.folder_var.set(folder)
+        self.tree.delete(*self.tree.get_children())
+        self.rows = []
+
+        files = self._scan_folder(folder)
+        if not files:
+            self._refresh_summary()
+            self.confirm_btn.config(state="disabled")
+            messagebox.showinfo("掃描結果", "此資料夾（含子資料夾）找不到 .mp3 或 .flac 檔案。")
+            return
+        self.add_paths(files)
+
+    def add_paths(self, paths):
+        """附加音訊檔到預覽表（自動去重）。此步驟不修改任何檔案。"""
+        existing = {os.path.normcase(os.path.abspath(r["path"])) for r in self.rows}
+        for path in sorted(paths):
+            key = os.path.normcase(os.path.abspath(path))
+            if key in existing:
+                continue
+            existing.add(key)
+            stem, ext = os.path.splitext(os.path.basename(path))
+            try:
+                # 內建標籤優先：先讀檔內 artist/title，缺失時才回退檔名解析。
+                tag_artist, tag_title = tagger.read_tags(path)
+                result = cleaner.resolve(stem, ext, tag_artist, tag_title)
+            except Exception:  # noqa: BLE001 - 單檔讀取失敗不應中斷整批載入
+                result = cleaner.resolve(stem, ext, None, None)
+            self._add_row(path, result)
+
+        self._refresh_summary()
         # 只要有可修改項就啟用按鈕。
         has_actionable = any(r["result"].parsable for r in self.rows)
         self.confirm_btn.config(state="normal" if has_actionable else "disabled")
-
-        if not files:
-            messagebox.showinfo("掃描結果", "此資料夾（含子資料夾）找不到 .mp3 或 .flac 檔案。")
 
     def _add_row(self, path, result):
         if result.parsable:
@@ -156,22 +193,48 @@ class AudioTagSurgeonApp:
             preview = f"{result.artist} - {result.title}"
             status = ST_PENDING
             tags = ()
+            selected = True
+            sel_char = "☑"
         else:
             preview = "—"
             status = ST_UNPARSABLE
             tags = ("unparsable",)
+            selected = False
+            sel_char = "—"
 
         tree_id = self.tree.insert(
             "", "end",
-            values=(result.original_stem + result.ext, result.artist, result.title, preview, status),
+            values=(sel_char, result.original_stem + result.ext,
+                    result.artist, result.title, preview, status),
             tags=tags,
         )
-        self.rows.append({"path": path, "result": result, "status": status, "tree_id": tree_id})
+        self.rows.append({
+            "path": path, "result": result, "status": status,
+            "tree_id": tree_id, "selected": selected,
+        })
+
+    def on_tree_click(self, event):
+        """點擊「修改」欄切換該列勾選（僅限尚可修改的列）。"""
+        if self.tree.identify("region", event.x, event.y) != "cell":
+            return
+        if self.tree.identify_column(event.x) != "#1":
+            return
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return
+        for row in self.rows:
+            if row["tree_id"] == item:
+                if row["result"].parsable and row["status"] == ST_PENDING:
+                    row["selected"] = not row["selected"]
+                    self._set_cell(item, "sel", "☑" if row["selected"] else "☐")
+                    self._refresh_summary()
+                return
 
     def on_confirm(self):
-        actionable = [r for r in self.rows if r["result"].parsable and r["status"] == ST_PENDING]
+        actionable = [r for r in self.rows
+                      if r["result"].parsable and r["status"] == ST_PENDING and r["selected"]]
         if not actionable:
-            messagebox.showinfo("提示", "沒有可寫入的項目。")
+            messagebox.showinfo("提示", "沒有勾選任何可寫入的項目。")
             return
 
         if not messagebox.askyesno("確認修改", f"即將寫入標籤並重命名 {len(actionable)} 個檔案，確定執行？"):
@@ -187,6 +250,7 @@ class AudioTagSurgeonApp:
                 new_name = os.path.basename(res.new_path)
                 self._set_cell(row["tree_id"], "status", ST_DONE)
                 self._set_cell(row["tree_id"], "original", new_name)
+                self._set_cell(row["tree_id"], "sel", "✓")
             elif res.status == tagger.STATUS_CONFLICT:
                 row["status"] = ST_CONFLICT
                 self.tree.item(row["tree_id"], tags=("bad",))
@@ -201,7 +265,7 @@ class AudioTagSurgeonApp:
 
     # ---------- 工具 ----------
     def _set_cell(self, tree_id, col, value):
-        cols = ("original", "artist", "title", "preview", "status")
+        cols = ("sel", "original", "artist", "title", "preview", "status")
         idx = cols.index(col)
         values = list(self.tree.item(tree_id, "values"))
         values[idx] = value
@@ -216,7 +280,10 @@ class AudioTagSurgeonApp:
             bad = sum(1 for r in self.rows if r["status"] in (ST_CONFLICT, ST_ERROR))
             self.summary_var.set(f"共 {total} 檔｜成功 {ok}｜衝突/錯誤 {bad}｜無法解析 {unparsable}")
         else:
-            self.summary_var.set(f"共 {total} 檔｜可修改 {pending}｜無法解析 {unparsable}")
+            checked = sum(1 for r in self.rows
+                          if r["result"].parsable and r["status"] == ST_PENDING and r["selected"])
+            self.summary_var.set(
+                f"共 {total} 檔｜已勾選 {checked}/{pending}｜無法解析 {unparsable}")
 
 
 def main():

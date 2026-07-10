@@ -58,6 +58,18 @@ class TestCleaner(unittest.TestCase):
         self.assertEqual(r.artist, "五月天")
         self.assertEqual(r.title, "倔強")
 
+    def test_junk_color_code_stripped(self):
+        # 標籤垃圾色碼（如 #0000FF）連同前置分隔符一併去除。
+        r = cleaner.resolve("L8R&阿林 - 窃爱者", ".flac", "L8R/阿林/#0000FF", "窃爱者")
+        self.assertEqual(r.artist, "L8R/阿林")
+        self.assertEqual(r.title, "竊愛者")
+        self.assertEqual(cleaner._denoise_title("歌名 #DEADBEEF"), "歌名")
+
+    def test_hash_titles_not_stripped(self):
+        # 正當的 # 標題不可被誤刪（非 6~8 位十六進位）。
+        self.assertEqual(cleaner._denoise_title("#1 Crush"), "#1 Crush")
+        self.assertEqual(cleaner._denoise_title("#Beautiful"), "#Beautiful")
+
     def test_conversion_idempotent(self):
         # 冪等性：已是繁體的文字再轉必須原樣不動（歧義字如 范 不可變 範）。
         for text in ("范瑋琪&張韶涵", "說愛你", "菸癮", "周杰倫", "鄧麗君"):
