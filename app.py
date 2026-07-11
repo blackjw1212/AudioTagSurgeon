@@ -71,12 +71,19 @@ class AudioTagSurgeonApp:
         widths = {"sel": 44, "original": 280, "artist": 130, "title": 170, "preview": 270, "status": 90}
 
         self.tree = ttk.Treeview(mid, columns=cols, show="headings", selectmode="none")
+        self._headers = headers
+        self._sort_col = None      # 目前排序欄
+        self._sort_desc = False    # 目前排序方向
         for c in cols:
             self.tree.heading(c, text=headers[c])
             self.tree.column(c, width=widths[c], anchor="center" if c == "sel" else "w")
-        # 點「修改」欄標題 = 全選/全不選；點各列的「修改」欄 = 切換單列
+        # 點「修改」欄標題 = 全選/全不選；其餘欄標題 = 切換排序（升冪/降冪）
         self.tree.heading("sel", command=self.on_toggle_all)
+        for c in cols[1:]:
+            self.tree.heading(c, command=lambda col=c: self.on_sort(col))
         self.tree.bind("<Button-1>", self.on_tree_click)
+        # 雙擊「演出者 / 歌曲名稱」儲存格 = 就地編輯
+        self.tree.bind("<Double-1>", self.on_tree_double_click)
         self.tree.tag_configure("unparsable", foreground="#999")
         self.tree.tag_configure("done", foreground="#2a7")
         self.tree.tag_configure("bad", foreground="#c33")
@@ -94,6 +101,7 @@ class AudioTagSurgeonApp:
         ttk.Label(bottom, textvariable=self.summary_var).pack(side="left")
         self.confirm_btn = ttk.Button(bottom, text="確認修改", command=self.on_confirm, state="disabled")
         self.confirm_btn.pack(side="right")
+        ttk.Button(bottom, text="清除", command=self.on_clear).pack(side="right", padx=(0, 6))
 
         # 註冊拖放（僅當視窗為 TkinterDnD 根視窗時）
         if _DND_AVAILABLE and hasattr(self.root, "drop_target_register"):
@@ -231,6 +239,104 @@ class AudioTagSurgeonApp:
             "path": path, "result": result, "status": status,
             "tree_id": tree_id, "selected": selected,
         })
+
+    def on_clear(self):
+        """清空清單（不動任何硬碟檔案）。"""
+        self.tree.delete(*self.tree.get_children())
+        self.rows = []
+        self.folder_var.set("尚未選擇資料夾")
+        self.confirm_btn.config(state="disabled")
+        # 還原排序狀態與表頭箭頭
+        self._sort_col = None
+        self._sort_desc = False
+        for c in ("original", "artist", "title", "preview", "status"):
+            self.tree.heading(c, text=self._headers[c])
+        self._refresh_summary()
+
+    def on_tree_double_click(self, event):
+        """雙擊「演出者 / 歌曲名稱」儲存格：就地編輯（Enter 確認、Esc 取消）。"""
+        if self.tree.identify("region", event.x, event.y) != "cell":
+            return
+        col_id = self.tree.identify_column(event.x)
+        if col_id not in ("#3", "#4"):   # 僅 演出者 / 歌曲名稱 可編輯
+            return
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return
+        row = next((r for r in self.rows if r["tree_id"] == item), None)
+        if row is None or row["status"] == ST_DONE:   # 已完成不可再編輯
+            return
+
+        bbox = self.tree.bbox(item, col_id)
+        if not bbox:
+            return
+        x, y, w, h = bbox
+        col = "artist" if col_id == "#3" else "title"
+        idx = int(col_id[1:]) - 1
+        current = str(self.tree.item(item, "values")[idx])
+
+        entry = ttk.Entry(self.tree)
+        entry.insert(0, current)
+        entry.select_range(0, "end")
+        entry.place(x=x, y=y, width=w, height=h)
+        entry.focus_set()
+
+        def commit(_event=None):
+            value = entry.get().strip()
+            entry.destroy()
+            if value and value != current:
+                self.apply_manual_edit(row, col, value)
+
+        def cancel(_event=None):
+            entry.destroy()
+
+        entry.bind("<Return>", commit)
+        entry.bind("<Escape>", cancel)
+        entry.bind("<FocusOut>", commit)
+
+    def apply_manual_edit(self, row, col, value):
+        """套用手動編輯：更新欄位與預覽，該列轉為 待修改+勾選。"""
+        result = row["result"]
+        if col == "artist":
+            result.artist = value
+        else:
+            result.title = value
+        result.parsable = bool(result.artist) and bool(result.title)
+
+        self._set_cell(row["tree_id"], "artist", result.artist)
+        self._set_cell(row["tree_id"], "title", result.title)
+        if result.parsable:
+            row["status"] = ST_PENDING
+            row["selected"] = True
+            self.tree.item(row["tree_id"], tags=())
+            self._set_cell(row["tree_id"], "sel", "☑")
+            self._set_cell(row["tree_id"], "preview", f"{result.artist} - {result.title}")
+            self._set_cell(row["tree_id"], "status", ST_PENDING)
+            self.confirm_btn.config(state="normal")
+        self._refresh_summary()
+
+    def on_sort(self, col):
+        """點欄位標題：以該欄排序，再點一次反向。勾選/狀態與列一對一跟著移動。"""
+        if not self.rows:
+            return
+        desc = (self._sort_col == col) and not self._sort_desc
+        self._sort_col, self._sort_desc = col, desc
+
+        cols = ("sel", "original", "artist", "title", "preview", "status")
+        idx = cols.index(col)
+
+        def key(row):
+            # 以表格顯示值排序（已完成列的原始檔名欄會是新檔名，照顯示排）。
+            return str(self.tree.item(row["tree_id"], "values")[idx]).casefold()
+
+        self.rows.sort(key=key, reverse=desc)
+        for i, row in enumerate(self.rows):
+            self.tree.move(row["tree_id"], "", i)
+
+        # 標題顯示排序方向箭頭（其餘欄還原）。
+        for c in cols[1:]:
+            arrow = (" ▼" if desc else " ▲") if c == col else ""
+            self.tree.heading(c, text=self._headers[c] + arrow)
 
     def on_toggle_all(self):
         """點「修改」欄標題：尚有未勾選者 → 全選；否則全不選。"""
