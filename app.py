@@ -24,6 +24,7 @@ AUDIO_EXTS = (".mp3", ".flac")
 
 # 狀態文字
 ST_PENDING = "待修改"
+ST_SKIP = "無須修改"
 ST_UNPARSABLE = "無法解析"
 ST_DONE = "✓ 已完成"
 ST_CONFLICT = "✗ 衝突"
@@ -82,8 +83,9 @@ class AudioTagSurgeonApp:
 
         vsb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
-        self.tree.pack(side="left", fill="both", expand=True)
+        # 滑條先 pack：pack 佈局後包者會被擠掉，先佔右側才能保證滑條永遠可見。
         vsb.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
 
         # 底部
         bottom = ttk.Frame(self.root, padding=8)
@@ -175,21 +177,37 @@ class AudioTagSurgeonApp:
                 continue
             existing.add(key)
             stem, ext = os.path.splitext(os.path.basename(path))
+            tag_artist = tag_title = None
             try:
-                # 內建標籤優先：先讀檔內 artist/title，缺失時才回退檔名解析。
+                # 檔名優先、標籤交叉校驗（詳見 cleaner.resolve）。
                 tag_artist, tag_title = tagger.read_tags(path)
                 result = cleaner.resolve(stem, ext, tag_artist, tag_title)
             except Exception:  # noqa: BLE001 - 單檔讀取失敗不應中斷整批載入
                 result = cleaner.resolve(stem, ext, None, None)
-            self._add_row(path, result)
+
+            # 檔名與標籤都已是目標狀態 → 無須修改。
+            no_change = False
+            if result.parsable:
+                target = cleaner.build_target_name(result.artist, result.title, result.ext)
+                no_change = (target == os.path.basename(path)
+                             and tag_artist == result.artist
+                             and tag_title == result.title)
+            self._add_row(path, result, no_change)
 
         self._refresh_summary()
-        # 只要有可修改項就啟用按鈕。
-        has_actionable = any(r["result"].parsable for r in self.rows)
+        # 只要有待修改項就啟用按鈕。
+        has_actionable = any(r["status"] == ST_PENDING for r in self.rows)
         self.confirm_btn.config(state="normal" if has_actionable else "disabled")
 
-    def _add_row(self, path, result):
-        if result.parsable:
+    def _add_row(self, path, result, no_change=False):
+        if result.parsable and no_change:
+            # 檔名與標籤都已正確 → 不列入寫入。
+            preview = f"{result.artist} - {result.title}"
+            status = ST_SKIP
+            tags = ("done",)
+            selected = False
+            sel_char = "—"
+        elif result.parsable:
             # 預覽欄只顯示「演出者 - 歌曲名稱」，不含副檔名（重命名時才補上真實副檔名）。
             preview = f"{result.artist} - {result.title}"
             status = ST_PENDING
@@ -286,17 +304,19 @@ class AudioTagSurgeonApp:
 
     def _refresh_summary(self, done=False):
         total = len(self.rows)
-        pending = sum(1 for r in self.rows if r["result"].parsable)
-        unparsable = total - pending
+        skip = sum(1 for r in self.rows if r["status"] == ST_SKIP)
+        unparsable = sum(1 for r in self.rows if r["status"] == ST_UNPARSABLE)
         if done:
             ok = sum(1 for r in self.rows if r["status"] == ST_DONE)
             bad = sum(1 for r in self.rows if r["status"] in (ST_CONFLICT, ST_ERROR))
-            self.summary_var.set(f"共 {total} 檔｜成功 {ok}｜衝突/錯誤 {bad}｜無法解析 {unparsable}")
-        else:
-            checked = sum(1 for r in self.rows
-                          if r["result"].parsable and r["status"] == ST_PENDING and r["selected"])
             self.summary_var.set(
-                f"共 {total} 檔｜已勾選 {checked}/{pending}｜無法解析 {unparsable}")
+                f"共 {total} 檔｜成功 {ok}｜衝突/錯誤 {bad}｜無須修改 {skip}｜無法解析 {unparsable}")
+        else:
+            pending = sum(1 for r in self.rows if r["status"] == ST_PENDING)
+            checked = sum(1 for r in self.rows
+                          if r["status"] == ST_PENDING and r["selected"])
+            self.summary_var.set(
+                f"共 {total} 檔｜已勾選 {checked}/{pending}｜無須修改 {skip}｜無法解析 {unparsable}")
 
 
 def main():

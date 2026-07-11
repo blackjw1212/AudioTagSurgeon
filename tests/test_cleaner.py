@@ -84,6 +84,19 @@ class TestCleaner(unittest.TestCase):
         self.assertEqual(r.artist, "張信哲")
         self.assertEqual(r.title, "別怕我傷心")
 
+    def test_fullwidth_substitute_prefers_tag_form(self):
+        # 檔名的全形替換字（／）不可寫回標籤：與標籤只差替換字時用標籤原字。
+        r = cleaner.resolve("Alan Walker／Iselin Solheim - Faded", ".flac",
+                            "Alan Walker/Iselin Solheim", "Faded")
+        self.assertEqual(r.artist, "Alan Walker/Iselin Solheim")
+        # 檔名仍是全形形式（不變）。
+        self.assertEqual(
+            cleaner.build_target_name(r.artist, r.title, r.ext),
+            "Alan Walker／Iselin Solheim - Faded.flac")
+        # 實質不同（& vs /）仍以檔名為準。
+        r2 = cleaner.resolve("L8R&阿林 - 窃爱者", ".flac", "L8R/阿林", "窃爱者")
+        self.assertEqual(r2.artist, "L8R&阿林")
+
     def test_spaced_split_protects_hyphen_artist(self):
         # 「A-Lin - 歌名」有空白破折號 → 切分正確，不需標籤救援。
         r = cleaner.resolve("A-Lin - P.S.我愛你", ".flac", None, None)

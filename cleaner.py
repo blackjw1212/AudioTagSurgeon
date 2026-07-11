@@ -195,6 +195,17 @@ def parse_filename(stem, ext=""):
     )
 
 
+def _prefer_tag_form(fn_value, tag_raw, cleaner_fn):
+    """
+    檔名值與標籤值只差「檔名安全替換字元」（如 ／ vs /）時，優先用標籤原字，
+    避免全形替換字被寫回標籤污染資料；實質不同（如 & vs /）仍以檔名為準。
+    """
+    tag_clean = cleaner_fn(to_traditional(tag_raw))
+    if tag_clean and tag_clean != fn_value and safe_component(tag_clean) == safe_component(fn_value):
+        return tag_clean
+    return fn_value
+
+
 def _from_tags(stem, ext, tag_artist, tag_title):
     """以標籤為來源建 ParseResult；清理後任一欄為空回 None。"""
     artist = _clean_artist(to_traditional(tag_artist))
@@ -228,11 +239,15 @@ def resolve(stem, ext, tag_artist=None, tag_title=None):
                 artist = _clean_artist(to_traditional(raw_a))
                 title = _denoise_title(to_traditional(raw_b))
                 if artist and title:
+                    artist = _prefer_tag_form(artist, tag_artist, _clean_artist)
+                    title = _prefer_tag_form(title, tag_title, _denoise_title)
                     return ParseResult(stem, ext, artist, title, True)
             elif _match(raw_a, tag_title) and _match(raw_b, tag_artist):
                 artist = _clean_artist(to_traditional(raw_b))
                 title = _denoise_title(to_traditional(raw_a))
                 if artist and title:
+                    artist = _prefer_tag_form(artist, tag_artist, _clean_artist)
+                    title = _prefer_tag_form(title, tag_title, _denoise_title)
                     return ParseResult(stem, ext, artist, title, True)
             result = _from_tags(stem, ext, tag_artist, tag_title)
             if result:
