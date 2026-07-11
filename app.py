@@ -73,7 +73,8 @@ class AudioTagSurgeonApp:
         for c in cols:
             self.tree.heading(c, text=headers[c])
             self.tree.column(c, width=widths[c], anchor="center" if c == "sel" else "w")
-        # 點擊「修改」欄切換勾選
+        # 點「修改」欄標題 = 全選/全不選；點各列的「修改」欄 = 切換單列
+        self.tree.heading("sel", command=self.on_toggle_all)
         self.tree.bind("<Button-1>", self.on_tree_click)
         self.tree.tag_configure("unparsable", foreground="#999")
         self.tree.tag_configure("done", foreground="#2a7")
@@ -212,6 +213,18 @@ class AudioTagSurgeonApp:
             "path": path, "result": result, "status": status,
             "tree_id": tree_id, "selected": selected,
         })
+
+    def on_toggle_all(self):
+        """點「修改」欄標題：尚有未勾選者 → 全選；否則全不選。"""
+        pending = [r for r in self.rows
+                   if r["result"].parsable and r["status"] == ST_PENDING]
+        if not pending:
+            return
+        target = not all(r["selected"] for r in pending)
+        for row in pending:
+            row["selected"] = target
+            self._set_cell(row["tree_id"], "sel", "☑" if target else "☐")
+        self._refresh_summary()
 
     def on_tree_click(self, event):
         """點擊「修改」欄切換該列勾選（僅限尚可修改的列）。"""

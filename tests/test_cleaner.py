@@ -59,11 +59,36 @@ class TestCleaner(unittest.TestCase):
         self.assertEqual(r.title, "倔強")
 
     def test_junk_color_code_stripped(self):
-        # 標籤垃圾色碼（如 #0000FF）連同前置分隔符一併去除。
+        # 檔名優先：檔名與標籤（去垃圾色碼後）吻合 → 用檔名內容，維持 &。
         r = cleaner.resolve("L8R&阿林 - 窃爱者", ".flac", "L8R/阿林/#0000FF", "窃爱者")
-        self.assertEqual(r.artist, "L8R/阿林")
+        self.assertEqual(r.artist, "L8R&阿林")
         self.assertEqual(r.title, "竊愛者")
         self.assertEqual(cleaner._denoise_title("歌名 #DEADBEEF"), "歌名")
+        # 純標籤路徑（無檔名可依）仍會剃除色碼。
+        r2 = cleaner.resolve("無分隔符", ".flac", "L8R/阿林/#0000FF", "窃爱者")
+        self.assertEqual(r2.artist, "L8R/阿林")
+
+    def test_swapped_filename_corrected(self):
+        # 檔名為「歌名 - 演出者」順序，與標籤反序吻合 → 對調校正。
+        r = cleaner.resolve("Zombie - The Cranberries", ".flac", "The Cranberries", "Zombie")
+        self.assertEqual(r.artist, "The Cranberries")
+        self.assertEqual(r.title, "Zombie")
+        # 標籤歌名帶 (Demo) 尾綴也能經含入比對認出反序。
+        r2 = cleaner.resolve("香烟与吻痕 - Hogee", ".flac", "Hogee", "香烟与吻痕 (Demo)")
+        self.assertEqual(r2.artist, "Hogee")
+        self.assertEqual(r2.title, "香菸與吻痕")
+
+    def test_filename_first_when_matching(self):
+        # 正序吻合 → 內容以檔名為準（簡轉繁自檔名字串）。
+        r = cleaner.resolve("张信哲 - 别怕我伤心", ".flac", "张信哲", "别怕我伤心")
+        self.assertEqual(r.artist, "張信哲")
+        self.assertEqual(r.title, "別怕我傷心")
+
+    def test_spaced_split_protects_hyphen_artist(self):
+        # 「A-Lin - 歌名」有空白破折號 → 切分正確，不需標籤救援。
+        r = cleaner.resolve("A-Lin - P.S.我愛你", ".flac", None, None)
+        self.assertEqual(r.artist, "A-Lin")
+        self.assertEqual(r.title, "P.S.我愛你")
 
     def test_hash_titles_not_stripped(self):
         # 正當的 # 標題不可被誤刪（非 6~8 位十六進位）。
@@ -125,8 +150,10 @@ class TestCleaner(unittest.TestCase):
 
     def test_live_in_version_name_kept(self):
         # 「Live」屬於版本名稱的一部分、非結尾標記時應保留，不可誤刪。
+        self.assertEqual(cleaner._denoise_title("天后 (盲目盲目Live版)"), "天后 (盲目盲目Live版)")
+        # 檔名優先：檔名寫「天后」→ 標題以檔名為準。
         r = cleaner.resolve("李佳薇-天后", ".flac", "李佳薇", "天后 (盲目盲目Live版)")
-        self.assertEqual(r.title, "天后 (盲目盲目Live版)")
+        self.assertEqual(r.title, "天后")
 
     def test_feat_qualifier_kept(self):
         # feat./版本等合理標題修飾詞應保留，不視為雜訊。

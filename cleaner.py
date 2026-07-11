@@ -24,6 +24,9 @@ except ImportError:  # pragma: no cover - 僅在未安裝套件時觸發
 # 分隔符：半形 - 與全形破折號變體，貼近真實檔名習慣。
 _SPLIT_CHARS = ("-", "－", "—", "–")
 
+# 首選切分：前後有空白的破折號（「A-Lin - 歌名」不會被切壞）；無則退回第一個裸分隔符。
+_SPACED_SPLIT = re.compile(r"\s[-－—–]\s")
+
 # 前導曲目編號（套用於 Artist 段開頭）：如 "01.", "03 - ", "12、", "1)"。
 # 關鍵：數字後「必須」緊跟分隔標點，避免把數字開頭的團名當編號刪掉
 #       （否則 1K→K、2Cellos→Cellos、21 Savage→Savage、50 Cent→Cent）。
@@ -112,6 +115,39 @@ def _find_split_index(stem):
     return min(indices) if indices else -1
 
 
+def _split_stem(stem):
+    """切分檔名為兩半。優先「空白-空白」形式，退回第一個裸分隔符；無則 None。"""
+    m = _SPACED_SPLIT.search(stem)
+    if m:
+        return stem[:m.start()], stem[m.end():]
+    idx = _find_split_index(stem)
+    if idx == -1:
+        return None
+    return stem[:idx], stem[idx + 1:]
+
+
+# 比對用正規化：去除空白、常見分隔/裝飾符，供檔名兩半與標籤交叉比對。
+_MATCH_STRIP = re.compile(r"[\s&＆/／,;，；、·×.．\-－—–_+＋()\[\]（）【】'’!！?？]+")
+
+
+def _norm_for_match(text):
+    """比對鍵：簡轉繁 -> 去垃圾 token -> 去分隔符/標點 -> casefold。"""
+    text = to_traditional(text)
+    text = _JUNK_TOKENS.sub("", text)
+    return _MATCH_STRIP.sub("", text).casefold()
+
+
+def _match(a, b):
+    """檔名片段與標籤是否指同一內容（相等或含入，短字串門檻防誤判）。"""
+    na, nb = _norm_for_match(a), _norm_for_match(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
+    return len(shorter) >= 2 and shorter in longer
+
+
 def _denoise_title(title):
     """套用去雜訊規則表 + 垃圾 token + 收尾清理。"""
     for pat in NOISE_PATTERNS:
@@ -138,12 +174,11 @@ def parse_filename(stem, ext=""):
     流程：切分 -> 簡轉繁 -> 去雜訊。
     找不到分隔符時 parsable=False，artist/title 留空（不修改該檔）。
     """
-    idx = _find_split_index(stem)
-    if idx == -1:
+    parts = _split_stem(stem)
+    if parts is None:
         return ParseResult(original_stem=stem, ext=ext, artist="", title="", parsable=False)
 
-    raw_artist = stem[:idx]
-    raw_title = stem[idx + 1:]
+    raw_artist, raw_title = parts
 
     # 先簡轉繁，再以繁體形式去雜訊（標記多為英文或中文，順序安全）。
     artist = _clean_artist(to_traditional(raw_artist))
@@ -160,27 +195,55 @@ def parse_filename(stem, ext=""):
     )
 
 
+def _from_tags(stem, ext, tag_artist, tag_title):
+    """以標籤為來源建 ParseResult；清理後任一欄為空回 None。"""
+    artist = _clean_artist(to_traditional(tag_artist))
+    title = _denoise_title(to_traditional(tag_title))
+    if artist and title:
+        return ParseResult(stem, ext, artist, title, True)
+    return None
+
+
 def resolve(stem, ext, tag_artist=None, tag_title=None):
     """
-    決定單一檔案的演出者/歌曲名稱來源（內建標籤優先）。
+    決定單一檔案的演出者/歌曲名稱（檔名優先，標籤交叉校驗）。
 
-    - 若內嵌標籤的 artist 與 title 皆有值 → 以標籤為準，套用簡轉繁 + 去雜訊。
-      （例如標籤 `说爱你 (Live)` → `說愛你`；歌手名 `A-Lin` 完整保留不被切分破壞。）
-    - 否則回退到檔名解析 `parse_filename`。
+    1. 檔名切成兩半後與標籤比對：
+       - 正序吻合（前半≈標籤演出者、後半≈標籤歌名）→ 用「檔名」內容
+         （檔名寫 L8R&阿林 就維持 &，不被標籤的 / 蓋掉）。
+       - 反序吻合 → 檔名是「歌名 - 演出者」順序，對調校正
+         （Zombie - The Cranberries → 演出者 The Cranberries）。
+       - 皆不吻合 → 檔名切分不可信（如 A-Lin 被裸切），改用標籤。
+    2. 檔名無分隔符 → 用標籤。
+    3. 標籤缺失 → 純檔名解析；兩者都失敗 → 無法解析。
     純函式、無 IO，便於單元測試。
     """
-    if tag_artist and tag_title:
-        artist = _clean_artist(to_traditional(tag_artist))
-        title = _denoise_title(to_traditional(tag_title))
-        if artist and title:
-            return ParseResult(
-                original_stem=stem,
-                ext=ext,
-                artist=artist,
-                title=title,
-                parsable=True,
-            )
-    return parse_filename(stem, ext)
+    parts = _split_stem(stem)
+    has_tags = bool(tag_artist) and bool(tag_title)
+
+    if parts is not None:
+        raw_a, raw_b = parts
+        if has_tags:
+            if _match(raw_a, tag_artist) and _match(raw_b, tag_title):
+                artist = _clean_artist(to_traditional(raw_a))
+                title = _denoise_title(to_traditional(raw_b))
+                if artist and title:
+                    return ParseResult(stem, ext, artist, title, True)
+            elif _match(raw_a, tag_title) and _match(raw_b, tag_artist):
+                artist = _clean_artist(to_traditional(raw_b))
+                title = _denoise_title(to_traditional(raw_a))
+                if artist and title:
+                    return ParseResult(stem, ext, artist, title, True)
+            result = _from_tags(stem, ext, tag_artist, tag_title)
+            if result:
+                return result
+        return parse_filename(stem, ext)
+
+    if has_tags:
+        result = _from_tags(stem, ext, tag_artist, tag_title)
+        if result:
+            return result
+    return ParseResult(stem, ext, "", "", False)
 
 
 def safe_component(text):
